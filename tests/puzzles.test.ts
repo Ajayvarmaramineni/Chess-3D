@@ -1,0 +1,3 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {Chess} from 'chess.js';import {PUZZLES,getDailyPuzzle} from '../src/chess/puzzles';
+test('every curated puzzle has a legal solution and reaches its stated objective',()=>{for(const puzzle of PUZZLES){const c=new Chess(puzzle.fen);for(const move of puzzle.line)assert.ok(c.move(move),puzzle.title);if(puzzle.mate)assert.equal(c.isCheckmate(),true,puzzle.title);}});
+test('daily puzzle selection is stable for a calendar day',()=>{const date=new Date('2026-09-27T12:00:00Z');assert.equal(getDailyPuzzle(date).id,getDailyPuzzle(new Date('2026-09-27T23:59:59Z')).id);});

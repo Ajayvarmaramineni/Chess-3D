@@ -1,0 +1,20 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {createRoomServer} from '../server/rooms';
+import {WebSocket} from 'ws';
+test('rooms reserve seats and reject a third participant',async()=>{const server=createRoomServer();await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const port=(server.address() as any).port;const base=`http://127.0.0.1:${port}`;try{
+ const post=(path:string,cookie='',body={})=>fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json',Origin:base,...(cookie?{Cookie:cookie}:{})},body:JSON.stringify(body)});
+ const made=await post('/api/rooms','',{clientId:'00000000-0000-4000-8000-000000000001'});assert.equal(made.status,201);assert.match(made.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);assert.equal(made.headers.get('x-content-type-options'),'nosniff');assert.match(made.headers.get('permissions-policy')??'',/microphone=\(self\)/);const data=await made.json();const host=made.headers.get('set-cookie')!.split(';')[0];
+ const guest=await post(`/api/rooms/${data.room}/join`,'',{clientId:'00000000-0000-4000-8000-000000000002'});assert.equal(guest.status,200);
+ const retriedGuest=await post(`/api/rooms/${data.room}/join`,'',{clientId:'00000000-0000-4000-8000-000000000002'});assert.equal(retriedGuest.status,200);assert.equal((await retriedGuest.json()).color,'black');
+ const extra=await post(`/api/rooms/${data.room}/join`,'',{clientId:'00000000-0000-4000-8000-000000000003'});assert.equal(extra.status,409);
+ const reconnect=await post(`/api/rooms/${data.room}/join`,host);assert.equal(reconnect.status,200);assert.equal((await reconnect.json()).color,'white');
+ const foreign=await fetch(base+'/api/rooms',{method:'POST',headers:{Origin:'https://evil.example','Content-Type':'application/json'},body:'{}'});assert.equal(foreign.status,403);
+ }finally{await new Promise<void>(r=>server.close(()=>r()));}});
+
+test('friend rooms support agreed draws and rematches',async()=>{const server=createRoomServer();await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const port=(server.address() as any).port,origin=`http://127.0.0.1:${port}`;const waitFor=(ws:WebSocket,predicate:(data:any)=>boolean)=>new Promise<any>((resolve,reject)=>{const timer=setTimeout(()=>{cleanup();reject(Error('message timeout'));},2000);const handler=(raw:WebSocket.RawData)=>{const data=JSON.parse(raw.toString());if(predicate(data)){cleanup();resolve(data);}};const cleanup=()=>{clearTimeout(timer);ws.off('message',handler);};ws.on('message',handler);});try{
+ const create=await fetch(origin+'/api/rooms',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({color:'white',clientId:'00000000-0000-4000-8000-000000000011'})});const {room}=await create.json();const hostCookie=create.headers.get('set-cookie')!.split(';')[0];
+ const join=await fetch(`${origin}/api/rooms/${room}/join`,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({clientId:'00000000-0000-4000-8000-000000000012'})});const guestCookie=join.headers.get('set-cookie')!.split(';')[0];
+ const host=new WebSocket(`ws://127.0.0.1:${port}/room-socket?room=${room}`,{headers:{Origin:origin,Cookie:hostCookie}}),guest=new WebSocket(`ws://127.0.0.1:${port}/room-socket?room=${room}`,{headers:{Origin:origin,Cookie:guestCookie}});await Promise.all([new Promise<void>(r=>host.once('open',()=>r())),new Promise<void>(r=>guest.once('open',()=>r()))]);
+ const offered=waitFor(guest,data=>data.type==='state'&&data.drawOffer==='white');host.send(JSON.stringify({type:'draw_offer'}));await offered;
+ const drawn=waitFor(host,data=>data.type==='state'&&data.saved?.terminal?.reason==='draw by agreement');guest.send(JSON.stringify({type:'draw_response',accept:true}));await drawn;
+ host.send(JSON.stringify({type:'rematch'}));const restarted=waitFor(host,data=>data.type==='state'&&!data.saved?.terminal&&data.rematchVotes?.length===0);guest.send(JSON.stringify({type:'rematch'}));await restarted;host.close();guest.close();
+ }finally{await new Promise<void>(r=>server.close(()=>r()));}});
